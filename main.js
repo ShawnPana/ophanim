@@ -760,9 +760,11 @@ function applyZoom(world, step) {
       }
       pane.view.webContents.setZoomFactor(next);
       // Scale the navbar too — its content (URL input, buttons) would
-      // otherwise look tiny next to a zoomed page. layoutWorld picks up
-      // the new zoomFactor to grow the navbar's height proportionally.
-      pane.chromeView.webContents.setZoomFactor(next);
+      // otherwise look tiny next to a zoomed page. Use CSS `zoom` via IPC
+      // rather than setZoomFactor: Chromium's HostZoomMap persists zoom
+      // per-origin at the session level, and every chromeView loads from
+      // file://, so setZoomFactor would leak across all browser panes.
+      try { pane.chromeView.webContents.send('chrome-zoom', next); } catch {}
       pane.zoomFactor = next;
       layoutWorld(world);
     } catch {}
@@ -1226,6 +1228,9 @@ ipcMain.on('chrome-ready', (e) => {
   const found = findPaneByChromeWc(e.sender);
   if (!found) return;
   found.pane.pushNavState();
+  if (found.pane.zoomFactor && found.pane.zoomFactor !== 1) {
+    try { found.pane.chromeView.webContents.send('chrome-zoom', found.pane.zoomFactor); } catch {}
+  }
   const u = found.pane.view.webContents.getURL() || '';
   if (/^about:blank\b/.test(u)) {
     try { found.pane.chromeView.webContents.focus(); } catch {}

@@ -201,6 +201,13 @@
     urlInput.focus();
     urlInput.select();
   });
+  // Per-pane navbar zoom. We use CSS `zoom` rather than webContents
+  // setZoomFactor because Chromium's HostZoomMap persists per-origin at
+  // the session level, which would leak one pane's zoom to every other
+  // chromeView loaded from the same file:// origin.
+  ipcRenderer.on('chrome-zoom', (_e, factor) => {
+    document.body.style.zoom = factor || 1;
+  });
   ipcRenderer.send('chrome-ready');
 </script>
 </body>
