@@ -556,7 +556,8 @@ function layoutWorld(world) {
     if (pane.kind === 'browser') {
       const ix = r.x + 1, iy = r.y + 1;
       const iw = Math.max(0, r.w - 2), ih = Math.max(0, r.h - 2);
-      const barH = Math.min(CHROME_BAR_HEIGHT, ih);
+      const zf = pane.zoomFactor || 1;
+      const barH = Math.min(Math.round(CHROME_BAR_HEIGHT * zf), ih);
       try { pane.chromeView.setBounds({ x: ix, y: iy, width: iw, height: barH }); } catch {}
       try { pane.view.setBounds({ x: ix, y: iy + barH, width: iw, height: Math.max(0, ih - barH) }); } catch {}
       try { pane.view.setVisible(true); } catch {}
@@ -751,12 +752,19 @@ function applyZoom(world, step) {
   const pane = ws.panes.get(ws.focusedPaneId);
   if (pane && pane.kind === 'browser') {
     try {
-      if (step === 0) pane.view.webContents.setZoomFactor(1);
+      let next;
+      if (step === 0) next = 1;
       else {
         const cur = pane.view.webContents.getZoomFactor();
-        const next = Math.max(0.25, Math.min(5, cur + step * 0.1));
-        pane.view.webContents.setZoomFactor(next);
+        next = Math.max(0.25, Math.min(5, cur + step * 0.1));
       }
+      pane.view.webContents.setZoomFactor(next);
+      // Scale the navbar too — its content (URL input, buttons) would
+      // otherwise look tiny next to a zoomed page. layoutWorld picks up
+      // the new zoomFactor to grow the navbar's height proportionally.
+      pane.chromeView.webContents.setZoomFactor(next);
+      pane.zoomFactor = next;
+      layoutWorld(world);
     } catch {}
     return;
   }
