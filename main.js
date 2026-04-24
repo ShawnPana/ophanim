@@ -450,6 +450,16 @@ let nextWsSeq = 1;
 const newPaneId = () => `p${nextPaneSeq++}`;
 const newWsId   = () => `w${nextWsSeq++}`;
 
+// tmux session names are opaque IDs, NOT derived from paneId. paneIds reset
+// to p1 every launch, but the tmux server is long-lived — deriving session
+// names from paneIds would make fresh panes collide with orphan sessions
+// from a crashed/discarded prior run, leaking stale scrollback into what
+// the user thinks is a clean shell. `BOOT_ID` namespaces this process's
+// session names; restored panes carry forward the saved name verbatim.
+const BOOT_ID = Date.now().toString(36);
+let nextTmuxSeq = 1;
+const mintTmuxSessionName = () => `term-${BOOT_ID}-${nextTmuxSeq++}`;
+
 const activeWs = (world) => world.workspaces[world.activeIdx];
 
 function findPaneGlobal(paneId) {
@@ -500,9 +510,9 @@ function resolveShell() {
   return '/bin/sh';
 }
 
-function spawnPty(world, paneId, cols = 100, rows = 30) {
+function spawnPty(world, paneId, tmuxSession, cols = 100, rows = 30) {
   const backend = initTmuxBackend();
-  if (backend.available()) return spawnPtyViaTmux(world, paneId, cols, rows);
+  if (backend.available()) return spawnPtyViaTmux(world, paneId, tmuxSession, cols, rows);
   return spawnPtyDirect(world, paneId, cols, rows);
 }
 
@@ -543,18 +553,20 @@ function buildTmuxShellCommand() {
   return [shell, ...integ.args].map(shQuote).join(' ');
 }
 
-function spawnPtyViaTmux(world, paneId, cols, rows) {
+function spawnPtyViaTmux(world, paneId, tmuxSession, cols, rows) {
   const backend = tmuxBackend;
   const shell = resolveShell();
   const integ = shellIntegration(shell);
   const env = ptyEnv(integ.env);
-  // Session naming is opaque — `term-${paneId}`. If an earlier ophanim
-  // launch left a session with this name, attach to that; otherwise make
-  // a fresh one. This is what makes session restore transparent.
-  if (!backend.hasSession(paneId)) {
+  // `tmuxSession` is the opaque durable identifier. For new panes the
+  // caller mints a fresh name via `mintTmuxSessionName()` so it can't
+  // collide with a surviving session from a prior process. For restored
+  // panes the caller passes the saved name verbatim so we reattach to
+  // the same shell. `hasSession` distinguishes the two cases here.
+  if (!backend.hasSession(tmuxSession)) {
     const cmd = buildTmuxShellCommand();
     try {
-      backend.createSession(paneId, {
+      backend.createSession(tmuxSession, {
         cwd: env.HOME || os.homedir(),
         env,
         // createSession appends this after session flags; tmux joins
@@ -568,7 +580,7 @@ function spawnPtyViaTmux(world, paneId, cols, rows) {
   }
   let p;
   try {
-    p = backend.attach(paneId, { cols, rows, env });
+    p = backend.attach(tmuxSession, { cols, rows, env });
   } catch (e) {
     console.warn('[ophanim] tmux attach failed, falling back:', e.message);
     return spawnPtyDirect(world, paneId, cols, rows);
@@ -770,13 +782,20 @@ function findLeafParent(node, paneId, parent = null) {
   return findLeafParent(node.a, paneId, node) || findLeafParent(node.b, paneId, node);
 }
 
-function addTermPane(world, ws, paneId) {
-  const pane = { id: paneId, kind: 'term', pty: null, rect: { x: 0, y: 0, w: 1, h: 1 } };
+function addTermPane(world, ws, paneId, tmuxSession) {
+  // tmuxSession is the durable name. Fresh new panes get a minted unique
+  // name; restore passes the snapshot's saved name so we reattach to the
+  // exact surviving shell.
+  const sess = tmuxSession || mintTmuxSessionName();
+  const pane = {
+    id: paneId, kind: 'term', pty: null, tmuxSession: sess,
+    rect: { x: 0, y: 0, w: 1, h: 1 },
+  };
   ws.panes.set(paneId, pane);
   if (world.rendererReady) {
     world.termView.webContents.send('pane-add', { paneId, kind: 'term' });
   }
-  pane.pty = spawnPty(world, paneId);
+  pane.pty = spawnPty(world, paneId, sess);
   return pane;
 }
 
@@ -785,12 +804,10 @@ function destroyPaneResources(world, pane) {
     // Kill the attach client (our local pty.spawn of `tmux attach`),
     // THEN kill the tmux session itself so the shell and its children
     // actually go away. Without the killSession call the shell would
-    // keep running orphaned in the tmux server forever. This path runs
-    // only on explicit pane close — NOT on browser conversion, where
-    // we want to preserve the session for a future convert-back.
+    // keep running orphaned in the tmux server forever.
     try { pane.pty && pane.pty.kill(); } catch {}
-    if (tmuxBackend && tmuxBackend.available()) {
-      try { tmuxBackend.killSession(pane.id); } catch {}
+    if (tmuxBackend && tmuxBackend.available() && pane.tmuxSession) {
+      try { tmuxBackend.killSession(pane.tmuxSession); } catch {}
     }
   } else if (pane.kind === 'browser') {
     try { world.win.contentView.removeChildView(pane.chromeView); } catch {}
@@ -1071,12 +1088,14 @@ function convertToBrowser(world, paneId, url, pid, opts) {
   const restoreIndex   = opts && typeof opts.restoreIndex === 'number' ? opts.restoreIndex : -1;
   const restoreZoom    = opts && typeof opts.zoomFactor  === 'number' ? opts.zoomFactor : null;
   const restoreEngaged = opts && opts.engaged;
-  // Only kill the attach-client PTY (our `tmux attach` spawn). With the
-  // tmux backend this leaves the tmux session alive so the shell keeps
-  // running and its state is preserved if the pane is ever converted
-  // back to a terminal. With direct-spawn fallback it's the same pty.kill
-  // we did before.
+  // Kill the attach-client PTY AND the underlying tmux session. There's
+  // no convert-back UI, so keeping the session around just accumulates
+  // orphans with stale scrollback ("[1] terminated browse <url>") that
+  // collide with future ophanim launches.
   try { pane.pty && pane.pty.kill(); } catch {}
+  if (tmuxBackend && tmuxBackend.available() && pane.tmuxSession) {
+    try { tmuxBackend.killSession(pane.tmuxSession); } catch {}
+  }
   if (world.rendererReady) {
     world.termView.webContents.send('pane-change-kind', { paneId, kind: 'browser' });
   }
@@ -1237,12 +1256,13 @@ function convertToTerminal(world, paneId) {
   const n = pane.pid ? Number(pane.pid) : NaN;
   if (Number.isFinite(n) && n > 0) { try { process.kill(n, 'SIGTERM'); } catch {} }
 
-  const termPane = { id: paneId, kind: 'term', pty: null, rect: pane.rect };
+  const sess = mintTmuxSessionName();
+  const termPane = { id: paneId, kind: 'term', pty: null, tmuxSession: sess, rect: pane.rect };
   ws.panes.set(paneId, termPane);
   if (world.rendererReady) {
     world.termView.webContents.send('pane-change-kind', { paneId, kind: 'term' });
   }
-  termPane.pty = spawnPty(world, paneId);
+  termPane.pty = spawnPty(world, paneId, sess);
   layoutWorld(world);
   pushFocus(world);
   markSessionDirty();
@@ -1405,11 +1425,10 @@ function restoreWorkspace(world, wsSnap) {
     const paneId = paneIdByLeafIdx[i];
     if (!paneId) continue;
     if (leaf.kind === 'browser') {
-      // Restore through the standard convertToBrowser path. We need a term
-      // pane slot first so it has something to replace — addTermPane then
-      // convertToBrowser, same flow as an interactive `browse <url>`. The
-      // transient term pane's tmux session is created then torn down by
-      // convertToBrowser. Acceptable churn for a clean one-pass restore.
+      // Restore through the standard convertToBrowser path. The transient
+      // term pane's tmux session is created then torn down by convertToBrowser.
+      // Mint a fresh session name for the transient — the saved snapshot
+      // has no tmuxSession for browser leaves anyway.
       addTermPane(world, ws, paneId);
       const startUrl = (leaf.history && leaf.history[leaf.historyIndex]
                         && leaf.history[leaf.historyIndex].url) || 'about:blank';
@@ -1421,17 +1440,15 @@ function restoreWorkspace(world, wsSnap) {
       });
     } else if (leaf.kind === 'config') {
       addTermPane(world, ws, paneId);
-      // convertToConfig is called via its OSC path in normal flow; we can
-      // call it directly here. It reuses the term-slot machinery same as
-      // the interactive path.
       try { convertToConfig(world, paneId); } catch (e) {
         console.warn('[ophanim] restore convertToConfig failed:', e.message);
       }
     } else {
-      // Term — addTermPane will spawn through spawnPty, which in tmux mode
-      // will hasSession() → attach to the surviving tmux session if it's
-      // still there, or create a fresh one in the same slot if not.
-      addTermPane(world, ws, paneId);
+      // Term — pass the saved tmuxSession verbatim so spawnPtyViaTmux
+      // reattaches to the exact surviving shell. If that session is
+      // gone (crash, user ran kill-session externally), spawnPty will
+      // transparently create a fresh one under the same name.
+      addTermPane(world, ws, paneId, leaf.tmuxSession);
     }
   }
 }
@@ -1555,7 +1572,7 @@ function newWindow(snapshot) {
       if (tmuxBackend && tmuxBackend.available()) {
         for (const ws of world.workspaces) {
           for (const p of ws.panes.values()) {
-            if (p.kind === 'term') { try { tmuxBackend.killSession(p.id); } catch {} }
+            if (p.kind === 'term' && p.tmuxSession) { try { tmuxBackend.killSession(p.tmuxSession); } catch {} }
           }
         }
       }
@@ -1773,6 +1790,7 @@ app.whenReady().then(() => {
   const store = initSessionStore();
 
   const restored = store.tryRestoreSession();
+  sweepOrphanTmuxSessions(restored);
   if (restored && Array.isArray(restored.windows) && restored.windows.length) {
     for (const w of restored.windows) {
       try { newWindow(w); }
@@ -1783,6 +1801,33 @@ app.whenReady().then(() => {
     newWindow();
   }
 });
+
+// Kill any tmux session left over from a prior ophanim process that the
+// current snapshot doesn't reference. Sources of orphans:
+//   - Crashes / force-quit (snapshot write missed, or layout diverged).
+//   - Older ophanim versions that leaked sessions on browser/config convert.
+//   - External `tmux new-session` on the same socket.
+// Without this sweep, a fresh pane's minted name could collide with an
+// orphan and the user would see stale scrollback from a dead shell.
+function sweepOrphanTmuxSessions(snapshot) {
+  if (!tmuxBackend || !tmuxBackend.available()) return;
+  const keep = new Set();
+  if (snapshot && Array.isArray(snapshot.windows)) {
+    for (const w of snapshot.windows) {
+      for (const ws of (w.workspaces || [])) {
+        for (const leaf of (ws.leaves || [])) {
+          if (leaf && leaf.kind === 'term' && leaf.tmuxSession) keep.add(leaf.tmuxSession);
+        }
+      }
+    }
+  }
+  let sessions;
+  try { sessions = tmuxBackend.listSessions(); } catch { return; }
+  for (const name of sessions) {
+    if (keep.has(name)) continue;
+    try { tmuxBackend.killSession(name); } catch {}
+  }
+}
 
 // ---------- config pane ----------
 
@@ -1820,6 +1865,9 @@ function convertToConfig(world, paneId) {
   }
   if (!ws || !pane || pane.kind !== 'term') return;
   try { pane.pty && pane.pty.kill(); } catch {}
+  if (tmuxBackend && tmuxBackend.available() && pane.tmuxSession) {
+    try { tmuxBackend.killSession(pane.tmuxSession); } catch {}
+  }
   if (world.rendererReady) {
     world.termView.webContents.send('pane-change-kind', { paneId, kind: 'config' });
   }
@@ -1979,7 +2027,7 @@ app.on('before-quit', (e) => {
         if (world.win.isDestroyed()) continue;
         for (const ws of world.workspaces) {
           for (const p of ws.panes.values()) {
-            if (p.kind === 'term') { try { tmuxBackend.killSession(p.id); } catch {} }
+            if (p.kind === 'term' && p.tmuxSession) { try { tmuxBackend.killSession(p.tmuxSession); } catch {} }
           }
         }
       }

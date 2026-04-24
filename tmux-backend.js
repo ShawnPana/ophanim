@@ -111,8 +111,6 @@ function createBackend({ unpackedDir, userDataDir, getOverridePath }) {
     return args;
   }
 
-  function sessionName(paneId) { return `term-${paneId}`; }
-
   function runControl(extraArgs, opts = {}) {
     const bin = tmuxPath();
     if (!bin) throw new Error('tmux not available');
@@ -123,21 +121,21 @@ function createBackend({ unpackedDir, userDataDir, getOverridePath }) {
     });
   }
 
-  function hasSession(paneId) {
+  function hasSession(sessionName) {
     if (!available()) return false;
     try {
-      runControl(['has-session', '-t', sessionName(paneId)]);
+      runControl(['has-session', '-t', sessionName]);
       return true;
     } catch {
       return false;
     }
   }
 
-  function createSession(paneId, { shellCommand, env, cwd }) {
+  function createSession(sessionName, { shellCommand, env, cwd }) {
     if (!available()) throw new Error('tmux not available');
     const args = [
       'new-session', '-d',
-      '-s', sessionName(paneId),
+      '-s', sessionName,
       '-x', '200', '-y', '50',      // initial size; resized on attach
       '-c', cwd || process.env.HOME || '/',
     ];
@@ -148,10 +146,10 @@ function createBackend({ unpackedDir, userDataDir, getOverridePath }) {
     runControl(args, { env: env || process.env });
   }
 
-  function killSession(paneId) {
+  function killSession(sessionName) {
     if (!available()) return;
     try {
-      runControl(['kill-session', '-t', sessionName(paneId)]);
+      runControl(['kill-session', '-t', sessionName]);
     } catch {
       // Already gone — benign.
     }
@@ -167,12 +165,12 @@ function createBackend({ unpackedDir, userDataDir, getOverridePath }) {
     }
   }
 
-  function attach(paneId, { cols, rows, env }) {
+  function attach(sessionName, { cols, rows, env }) {
     if (!available()) throw new Error('tmux not available');
     // TMUX env var has to be unset; tmux refuses to attach from inside an
     // existing client otherwise ("sessions should be nested with care").
     const childEnv = { ...(env || process.env), TMUX: '' };
-    const args = [...baseArgs(), 'attach-session', '-t', sessionName(paneId)];
+    const args = [...baseArgs(), 'attach-session', '-t', sessionName];
     return pty.spawn(tmuxPath(), args, {
       name: 'tmux-256color',
       cols: cols || 100,
@@ -186,7 +184,6 @@ function createBackend({ unpackedDir, userDataDir, getOverridePath }) {
     available,
     tmuxPath,
     invalidatePathCache,
-    sessionName,
     hasSession,
     createSession,
     killSession,

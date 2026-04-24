@@ -47,7 +47,11 @@ function createStore({ userDataDir, getWorlds }) {
 
   function captureLeaf(pane) {
     if (pane.kind === 'term') {
-      return { kind: 'term', tmuxSession: `term-${pane.id}` };
+      // pane.tmuxSession is the durable session name. Fresh panes got a
+      // minted unique name at addTermPane time; restored panes carried
+      // the prior snapshot's name forward. Either way, serialize it
+      // verbatim so the next relaunch can reattach to the exact shell.
+      return { kind: 'term', tmuxSession: pane.tmuxSession };
     }
     if (pane.kind === 'browser') {
       return captureBrowserLeaf(pane);
