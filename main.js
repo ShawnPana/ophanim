@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog } = require('electron');
 
 const path = require('path');
 const os = require('os');
@@ -1164,6 +1164,41 @@ function newWindow() {
   win.on('show', syncTermBounds);
   win.on('ready-to-show', syncTermBounds);
   const pollId = setInterval(syncTermBounds, 250);
+
+  // Per-window close gate. If the window has non-trivial state (>1 workspace,
+  // >1 pane anywhere, or any browser pane), ask before closing. Triggered by
+  // the red traffic-light, Cmd+Shift+W, and programmatic win.close().
+  // quitConfirmed is set when the user OK'd an app-level quit — skip the
+  // per-window prompt in that case so they don't see N dialogs in a row.
+  win.on('close', (e) => {
+    if (quitConfirmed || win._closeConfirmed) return;
+    let wsCount = 0, paneCount = 0, hasBrowser = false;
+    for (const ws of world.workspaces) {
+      wsCount++;
+      for (const p of ws.panes.values()) {
+        paneCount++;
+        if (p.kind === 'browser') hasBrowser = true;
+      }
+    }
+    const trivial = wsCount <= 1 && paneCount <= 1 && !hasBrowser;
+    if (trivial) return;
+    e.preventDefault();
+    const pl = (n, s) => `${n} ${n === 1 ? s : s + 's'}`;
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Close window', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Close window?',
+      message: 'Close this window?',
+      detail: `${pl(wsCount, 'workspace')}, ${pl(paneCount, 'pane')} will be closed.`,
+    });
+    if (choice === 0) {
+      win._closeConfirmed = true;
+      win.close();
+    }
+  });
+
   win.on('closed', () => {
     clearInterval(pollId);
     for (const ws of world.workspaces) {
@@ -1490,3 +1525,45 @@ ipcMain.on('config-ui-reset', (e) => {
 });
 
 app.on('window-all-closed', () => { app.quit(); });
+
+// Confirm full-app quits only. Red traffic-light, Cmd+Shift+W, closePane,
+// and closeWorkspace all close immediately — they're explicit local
+// gestures. Cmd+Q / File→Quit / "window-all-closed → app.quit" go
+// through before-quit and get a native modal so a whole session isn't
+// lost to a slipped chord.
+let quitConfirmed = false;
+app.on('before-quit', (e) => {
+  if (quitConfirmed) return;
+  let windowCount = 0, workspaceCount = 0, paneCount = 0;
+  for (const world of worlds.values()) {
+    if (world.win.isDestroyed()) continue;
+    windowCount++;
+    for (const ws of world.workspaces) {
+      workspaceCount++;
+      paneCount += ws.panes.size;
+    }
+  }
+  // If the user already closed every window (red X / Cmd+Shift+W / last
+  // closeWorkspace), window-all-closed → app.quit reaches us with nothing
+  // left to return to. Skip the dialog; they meant it.
+  if (windowCount === 0) {
+    quitConfirmed = true;
+    return;
+  }
+  e.preventDefault();
+  const pl = (n, s) => `${n} ${n === 1 ? s : s + 's'}`;
+  const detail = `${pl(windowCount, 'window')}, ${pl(workspaceCount, 'workspace')}, ${pl(paneCount, 'pane')} open.`;
+  const choice = dialog.showMessageBoxSync({
+    type: 'warning',
+    buttons: ['Quit', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    title: 'Quit Terminum?',
+    message: 'Quit Terminum?',
+    detail,
+  });
+  if (choice === 0) {
+    quitConfirmed = true;
+    app.quit();
+  }
+});
