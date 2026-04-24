@@ -1055,10 +1055,17 @@ function cycleWorkspace(world, dir) {
 // ---------- browser pane conversion ----------
 
 function convertToBrowser(world, paneId, url, pid, opts) {
-  const ws = activeWs(world);
-  if (!ws) return;
-  const pane = ws.panes.get(paneId);
-  if (!pane || pane.kind !== 'term') return;
+  // Locate the pane by its paneId across ALL workspaces in this world, not
+  // just the active one. During session restore we walk workspaces in order
+  // while activeIdx is still 0, so the pane we're converting is often in a
+  // non-active workspace — using activeWs here silently no-op'd the restore
+  // for ws2+ browser panes.
+  let ws = null, pane = null;
+  for (const candidateWs of world.workspaces) {
+    const cp = candidateWs.panes.get(paneId);
+    if (cp) { ws = candidateWs; pane = cp; break; }
+  }
+  if (!ws || !pane || pane.kind !== 'term') return;
   const target = normalizeUrl(url);
   const restoreEntries = opts && Array.isArray(opts.restoreEntries) ? opts.restoreEntries : null;
   const restoreIndex   = opts && typeof opts.restoreIndex === 'number' ? opts.restoreIndex : -1;
@@ -1214,10 +1221,12 @@ function convertToBrowser(world, paneId, url, pid, opts) {
 }
 
 function convertToTerminal(world, paneId) {
-  const ws = activeWs(world);
-  if (!ws) return;
-  const pane = ws.panes.get(paneId);
-  if (!pane || (pane.kind !== 'browser' && pane.kind !== 'config')) return;
+  let ws = null, pane = null;
+  for (const candidateWs of world.workspaces) {
+    const cp = candidateWs.panes.get(paneId);
+    if (cp) { ws = candidateWs; pane = cp; break; }
+  }
+  if (!ws || !pane || (pane.kind !== 'browser' && pane.kind !== 'config')) return;
   try { world.termView.webContents.focus(); } catch {}
   if (pane.chromeView) {
     try { world.win.contentView.removeChildView(pane.chromeView); } catch {}
@@ -1512,22 +1521,50 @@ function newWindow(snapshot) {
       }
     }
     const trivial = wsCount <= 1 && paneCount <= 1 && !hasBrowser;
-    if (trivial) return;
+    if (trivial) {
+      // Nothing to confirm, but still snapshot before the window dies
+      // so the next launch can reattach to whatever's in the tmux server.
+      if (sessionStore) { try { sessionStore.flushSync(); } catch {} }
+      return;
+    }
     e.preventDefault();
     const pl = (n, s) => `${n} ${n === 1 ? s : s + 's'}`;
     const choice = dialog.showMessageBoxSync(win, {
-      type: 'warning',
-      buttons: ['Close window', 'Cancel'],
-      defaultId: 1,
-      cancelId: 1,
+      type: 'question',
+      buttons: ['Save & close', 'Discard & close', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
       title: 'Close window?',
       message: 'Close this window?',
-      detail: `${pl(wsCount, 'workspace')}, ${pl(paneCount, 'pane')} will be closed.`,
+      detail:
+        `${pl(wsCount, 'workspace')}, ${pl(paneCount, 'pane')}.\n\n` +
+        `Save & close: your layout and running shells come back the next ` +
+        `time you open Ophanim.\nDiscard & close: shells are killed and the ` +
+        `saved layout is cleared.`,
     });
     if (choice === 0) {
+      // Save path: snapshot the layout so the next launch can reattach,
+      // then let the window close. tmux sessions stay alive.
       win._closeConfirmed = true;
+      if (sessionStore) { try { sessionStore.flushSync(); } catch {} }
+      win.close();
+    } else if (choice === 1) {
+      // Discard path: kill every tmux session in this window and delete
+      // the saved snapshot so next launch is fresh.
+      win._closeConfirmed = true;
+      if (tmuxBackend && tmuxBackend.available()) {
+        for (const ws of world.workspaces) {
+          for (const p of ws.panes.values()) {
+            if (p.kind === 'term') { try { tmuxBackend.killSession(p.id); } catch {} }
+          }
+        }
+      }
+      if (sessionStore) {
+        try { fs.unlinkSync(sessionStore.sessionPath); } catch {}
+      }
       win.close();
     }
+    // choice === 2 (Cancel): the preventDefault above keeps the window.
   });
 
   win.on('closed', () => {
@@ -1535,15 +1572,12 @@ function newWindow(snapshot) {
     for (const ws of world.workspaces) {
       for (const p of ws.panes.values()) {
         if (p.kind === 'term') {
+          // Just kill the attach client — NOT the tmux session. Closing
+          // a window (red X, Cmd+Shift+W, or the app quit path) should
+          // preserve shells so a relaunch brings them back. The snapshot
+          // was written in win.on('close') before the window died, so
+          // the tree state needed to reattach is on disk.
           try { p.pty && p.pty.kill(); } catch {}
-          // Kill the backing tmux session unless we're in the quit
-          // path — quit preserves sessions so the next launch can
-          // reattach. Closing an individual window (red X / Cmd+Shift+W)
-          // hits this branch with quitConfirmed=false, and those shells
-          // really should go away.
-          if (!quitConfirmed && tmuxBackend && tmuxBackend.available()) {
-            try { tmuxBackend.killSession(p.id); } catch {}
-          }
         }
         if (p.kind === 'browser') {
           const n = p.pid ? Number(p.pid) : NaN;
@@ -1779,10 +1813,12 @@ function allDefaults() {
 }
 
 function convertToConfig(world, paneId) {
-  const ws = activeWs(world);
-  if (!ws) return;
-  const pane = ws.panes.get(paneId);
-  if (!pane || pane.kind !== 'term') return;
+  let ws = null, pane = null;
+  for (const candidateWs of world.workspaces) {
+    const cp = candidateWs.panes.get(paneId);
+    if (cp) { ws = candidateWs; pane = cp; break; }
+  }
+  if (!ws || !pane || pane.kind !== 'term') return;
   try { pane.pty && pane.pty.kill(); } catch {}
   if (world.rendererReady) {
     world.termView.webContents.send('pane-change-kind', { paneId, kind: 'config' });
@@ -1906,28 +1942,52 @@ app.on('before-quit', (e) => {
   // left to return to. Skip the dialog; they meant it.
   if (windowCount === 0) {
     quitConfirmed = true;
-    // Nothing open — flush anyway so the snapshot reflects "no windows"
-    // and we don't re-restore the previously-closed ones on next launch.
-    if (sessionStore) { try { sessionStore.flushSync(); } catch {} }
+    // Don't flush here — worlds is empty so the snapshot would be
+    // `{windows: []}`, wiping out the per-window snapshots that the
+    // win.on('close') handlers already wrote. Whatever the last alive
+    // window captured is what next launch should restore to.
     return;
   }
   e.preventDefault();
   const pl = (n, s) => `${n} ${n === 1 ? s : s + 's'}`;
-  const detail = `${pl(windowCount, 'window')}, ${pl(workspaceCount, 'workspace')}, ${pl(paneCount, 'pane')} open.`;
+  const counts = `${pl(windowCount, 'window')}, ${pl(workspaceCount, 'workspace')}, ${pl(paneCount, 'pane')}.`;
   const choice = dialog.showMessageBoxSync({
-    type: 'warning',
-    buttons: ['Quit', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1,
+    type: 'question',
+    buttons: ['Save & quit', 'Discard & quit', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
     title: 'Quit Ophanim?',
     message: 'Quit Ophanim?',
-    detail,
+    detail:
+      `${counts}\n\n` +
+      `Save & quit: your layout and running shells come back the next time ` +
+      `you open Ophanim.\nDiscard & quit: shells are killed and the saved ` +
+      `layout is cleared.`,
   });
   if (choice === 0) {
+    // Save path: snapshot the live state so the next launch restores to it.
+    // tmux sessions survive — win.on('closed') only kills the attach clients.
     quitConfirmed = true;
-    // Synchronous snapshot BEFORE windows start closing. Writes
-    // sessions.json with the current layout; next launch restores from it.
     if (sessionStore) { try { sessionStore.flushSync(); } catch {} }
     app.quit();
+  } else if (choice === 1) {
+    // Discard path: kill every tmux session across every window, delete
+    // the snapshot file, then quit. Fresh slate next launch.
+    quitConfirmed = true;
+    if (tmuxBackend && tmuxBackend.available()) {
+      for (const world of worlds.values()) {
+        if (world.win.isDestroyed()) continue;
+        for (const ws of world.workspaces) {
+          for (const p of ws.panes.values()) {
+            if (p.kind === 'term') { try { tmuxBackend.killSession(p.id); } catch {} }
+          }
+        }
+      }
+    }
+    if (sessionStore) {
+      try { fs.unlinkSync(sessionStore.sessionPath); } catch {}
+    }
+    app.quit();
   }
+  // choice === 2 (Cancel): preventDefault above keeps everything running.
 });

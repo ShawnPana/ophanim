@@ -37,6 +37,10 @@ set -g default-terminal tmux-256color
 set -g history-limit 50000
 set -g window-size latest
 set -g detach-on-destroy off
+# Let the 'browse' / 'config' commands' DCS-wrapped OSC 1983 escape
+# sequences pass through tmux to the attach client. Without this tmux
+# filters unknown OSCs and the renderer never sees them.
+set -g allow-passthrough on
 `;
 
 function createBackend({ unpackedDir, userDataDir, getOverridePath }) {
@@ -92,6 +96,11 @@ function createBackend({ unpackedDir, userDataDir, getOverridePath }) {
       // the user still gets persistence.
       confPath = null;
     }
+    // Apply critical settings to any already-running server. Config files
+    // are only read at server startup; sessions created before the conf
+    // changed wouldn't pick this up otherwise. Best-effort — silently
+    // no-ops if there's no server yet.
+    try { runControl(['set-option', '-g', 'allow-passthrough', 'on']); } catch {}
     return confPath;
   }
 
