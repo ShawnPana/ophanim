@@ -1,13 +1,13 @@
-# terminum bash integration. Loaded via `bash --rcfile <this>` when a
-# terminum pane spawns bash. Source the user's real rc first so their
-# environment is unchanged, then re-prepend $TERMINUM_BIN to PATH —
+# ophanim bash integration. Loaded via `bash --rcfile <this>` when a
+# ophanim pane spawns bash. Source the user's real rc first so their
+# environment is unchanged, then re-prepend $OPHANIM_BIN to PATH —
 # macOS path_helper (from /etc/profile) otherwise wipes it on login shells.
 if [ -f "$HOME/.bashrc" ]; then
   . "$HOME/.bashrc"
 fi
-if [ -n "$TERMINUM_BIN" ]; then
+if [ -n "$OPHANIM_BIN" ]; then
   case ":$PATH:" in
-    *":$TERMINUM_BIN:"*) ;;
-    *) export PATH="$TERMINUM_BIN:$PATH" ;;
+    *":$OPHANIM_BIN:"*) ;;
+    *) export PATH="$OPHANIM_BIN:$PATH" ;;
   esac
 fi

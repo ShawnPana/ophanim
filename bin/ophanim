@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# terminum — dispatcher for terminum subcommands.
+# ophanim — dispatcher for ophanim subcommands.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 cmd="${1:-help}"
@@ -14,17 +14,17 @@ case "$cmd" in
     ;;
   help|-h|--help|'')
     cat <<'USAGE'
-terminum — commands for the terminum terminal.
+ophanim — commands for the ophanim terminal.
 
-  terminum browse [url]   Turn the focused pane into a browser.
-  terminum config         Open ~/.config/terminum/config.json in $EDITOR.
+  ophanim browse [url]   Turn the focused pane into a browser.
+  ophanim config         Open ~/.config/ophanim/config.json in $EDITOR.
 
 Shorthand: `browse` and `config` are aliases for the above.
 USAGE
     ;;
   *)
-    echo "terminum: unknown subcommand '$cmd'" >&2
-    echo "try: terminum help" >&2
+    echo "ophanim: unknown subcommand '$cmd'" >&2
+    echo "try: ophanim help" >&2
     exit 1
     ;;
 esac

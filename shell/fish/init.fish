@@ -1,8 +1,8 @@
-# terminum fish integration. Loaded via `fish --init-command "source <this>"`
-# when a terminum pane spawns fish. User config has already been sourced
-# by fish itself; we just re-prepend $TERMINUM_BIN in case anything wiped it.
-if set -q TERMINUM_BIN
-  if not contains -- $TERMINUM_BIN $PATH
-    set -gx PATH $TERMINUM_BIN $PATH
+# ophanim fish integration. Loaded via `fish --init-command "source <this>"`
+# when a ophanim pane spawns fish. User config has already been sourced
+# by fish itself; we just re-prepend $OPHANIM_BIN in case anything wiped it.
+if set -q OPHANIM_BIN
+  if not contains -- $OPHANIM_BIN $PATH
+    set -gx PATH $OPHANIM_BIN $PATH
   end
 end

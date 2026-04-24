@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# config — ask terminum to open its settings window. Works inside tmux by
-# wrapping the OSC in DCS passthrough. Outside terminum this is a silent
+# config — ask ophanim to open its settings window. Works inside tmux by
+# wrapping the OSC in DCS passthrough. Outside ophanim this is a silent
 # no-op (the OSC is ignored).
 
 if [ -n "${TMUX:-}" ]; then
   tmux set -g -q allow-passthrough on 2>/dev/null
-  printf '\ePtmux;\e\e]1983;terminum-config\e\e\\\e\\'
+  printf '\ePtmux;\e\e]1983;ophanim-config\e\e\\\e\\'
 else
-  printf '\e]1983;terminum-config\e\\'
+  printf '\e]1983;ophanim-config\e\\'
 fi

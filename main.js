@@ -9,7 +9,7 @@ const pty = require('node-pty');
 // bot walls scan for these signals.
 //   - `AutomationControlled` Blink feature sets navigator.webdriver = true
 //     and adds related automation signals; disable it.
-//   - Strip "terminum/x.y.z" and "Electron/x.y.z" from the default user agent
+//   - Strip "ophanim/x.y.z" and "Electron/x.y.z" from the default user agent
 //     so pages see a plain Chrome UA, not an Electron-branded one.
 //   - Enable Chromium's remote-debugging so CDP is available at runtime
 //     (0 = auto-select port); allow any origin since we gate externally.
@@ -18,7 +18,7 @@ app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 app.commandLine.appendSwitch('remote-allow-origins', '*');
 app.userAgentFallback = (app.userAgentFallback || '')
-  .replace(/\s?terminum\/\S+/, '')
+  .replace(/\s?ophanim\/\S+/, '')
   .replace(/\s?Electron\/\S+/, '');
 
 // Boot-time config read: certain settings (like userData path) must be
@@ -26,18 +26,26 @@ app.userAgentFallback = (app.userAgentFallback || '')
 // via loadConfigFromDisk in whenReady().
 (function applyBootConfig() {
   try {
-    const bootCfgPath = path.join(os.homedir(), '.config', 'terminum', 'config.json');
+    const bootCfgPath = path.join(os.homedir(), '.config', 'ophanim', 'config.json');
     const raw = fs.readFileSync(bootCfgPath, 'utf8');
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed.profileDir === 'string' && parsed.profileDir.trim()) {
       const dir = parsed.profileDir.trim().replace(/^~(?=\/|$)/, os.homedir());
-      try { app.setPath('userData', dir); } catch (e) { console.warn('[terminum] profileDir:', e.message); }
+      try { app.setPath('userData', dir); } catch (e) { console.warn('[ophanim] profileDir:', e.message); }
     }
   } catch {}
 })();
 
 const APP_DIR = __dirname;
-const BIN_DIR = path.join(APP_DIR, 'bin');
+// HTMLs and the preload can stay inside app.asar — Electron reads them.
+// Scripts the spawned pty has to `exec` or `source` (bin/* and shell/*)
+// cannot live inside an archive, so in a packaged build they're read from
+// the asar.unpacked resources directory alongside it. In dev, both
+// collapse to __dirname.
+const UNPACKED_DIR = app.isPackaged
+  ? path.join(process.resourcesPath, 'app.asar.unpacked')
+  : APP_DIR;
+const BIN_DIR = path.join(UNPACKED_DIR, 'bin');
 const CHROME_HTML = path.join(APP_DIR, 'browser-chrome.html');
 const CONFIG_UI_HTML = path.join(APP_DIR, 'config-ui.html');
 const BROWSER_PRELOAD = path.join(APP_DIR, 'browser-preload.js');
@@ -50,7 +58,7 @@ function currentBarHeight(world) {
   return Math.max(WORKSPACE_BAR_BASE_HEIGHT, Math.round(fs * 1.7));
 }
 
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'terminum');
+const CONFIG_DIR = path.join(os.homedir(), '.config', 'ophanim');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const DEFAULTS_PATH = path.join(CONFIG_DIR, 'defaults.json');
 
@@ -248,7 +256,7 @@ function loadConfigFromDisk() {
       parsed = {};
     } else {
       const msg = `config syntax: ${e.message}`;
-      console.warn('[terminum]', msg);
+      console.warn('[ophanim]', msg);
       pushConfigError(msg);
       return;
     }
@@ -257,7 +265,7 @@ function loadConfigFromDisk() {
   const errors = validateConfig(parsed);
   if (errors.length > 0) {
     const msg = `config: ${errors.join('; ')}`;
-    console.warn('[terminum]', msg);
+    console.warn('[ophanim]', msg);
     pushConfigError(msg);
     return; // don't apply a semantically-broken config
   }
@@ -344,7 +352,7 @@ function writeDefaultsFile() {
   try {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
     const content = {
-      _comment: 'terminum defaults — regenerated every launch, do not edit. Copy lines from here into config.json to override.',
+      _comment: 'ophanim defaults — regenerated every launch, do not edit. Copy lines from here into config.json to override.',
       _reference: CONFIG_REFERENCE,
       keybindings: DEFAULT_BINDINGS,
       terminal: DEFAULT_TERMINAL,
@@ -354,7 +362,7 @@ function writeDefaultsFile() {
       browser: DEFAULT_BROWSER,
     };
     fs.writeFileSync(DEFAULTS_PATH, JSON.stringify(content, null, 2));
-  } catch (e) { console.warn('[terminum] writeDefaultsFile:', e.message); }
+  } catch (e) { console.warn('[ophanim] writeDefaultsFile:', e.message); }
 }
 
 // User's config.json — seeded as a minimal stub. Anything not overridden
@@ -369,7 +377,7 @@ function ensureConfigFile() {
       };
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(seed, null, 2));
     }
-  } catch (e) { console.warn('[terminum] ensureConfigFile:', e.message); }
+  } catch (e) { console.warn('[ophanim] ensureConfigFile:', e.message); }
 }
 
 function watchConfig() {
@@ -377,7 +385,7 @@ function watchConfig() {
     fs.watchFile(CONFIG_PATH, { interval: 400, persistent: false }, (curr, prev) => {
       if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) loadConfigFromDisk();
     });
-  } catch (e) { console.warn('[terminum] watchConfig:', e.message); }
+  } catch (e) { console.warn('[ophanim] watchConfig:', e.message); }
 }
 
 // ---------- state ----------
@@ -414,9 +422,9 @@ function findPaneGlobal(paneId) {
 // the PATH prepend — just no reinstatement if something later wipes it.
 function shellIntegration(shellPath) {
   const base = path.basename(shellPath || '').toLowerCase();
-  const BASH_RC  = path.join(APP_DIR, 'shell', 'bash', 'rc');
-  const FISH_RC  = path.join(APP_DIR, 'shell', 'fish', 'init.fish');
-  const ZSH_DIR  = path.join(APP_DIR, 'shell', 'zsh');
+  const BASH_RC  = path.join(UNPACKED_DIR, 'shell', 'bash', 'rc');
+  const FISH_RC  = path.join(UNPACKED_DIR, 'shell', 'fish', 'init.fish');
+  const ZSH_DIR  = path.join(UNPACKED_DIR, 'shell', 'zsh');
   if (base === 'zsh')  return { args: [],                                            env: { ZDOTDIR: ZSH_DIR } };
   if (base === 'bash') return { args: ['--rcfile', BASH_RC],                         env: { BASH_ENV: BASH_RC } };
   if (base === 'fish') return { args: ['--init-command', `source '${FISH_RC}'`],     env: {} };
@@ -428,8 +436,8 @@ function ptyEnv(shellSpecific = {}) {
     ...process.env,
     TERM: 'xterm-256color',
     PATH: `${BIN_DIR}:${process.env.PATH || ''}`,
-    TERMINUM_BIN: BIN_DIR,
-    TERMINUM_SHELL_INTEGRATION: '1',
+    OPHANIM_BIN: BIN_DIR,
+    OPHANIM_SHELL_INTEGRATION: '1',
     ...shellSpecific,
   };
 }
@@ -1121,7 +1129,7 @@ function newWindow() {
   const win = new BrowserWindow({
     width: windowConfig.width || 1000,
     height: windowConfig.height || 650,
-    title: 'Terminum',
+    title: 'Ophanim',
     backgroundColor: '#000000',
   });
 
@@ -1297,7 +1305,7 @@ ipcMain.on('preload-debug', (_e, payload) => {
   try { console.log('[preload]', JSON.stringify(payload)); } catch {}
 });
 
-ipcMain.on('terminum-config', (e) => {
+ipcMain.on('ophanim-config', (e) => {
   for (const world of worlds.values()) {
     if (world.termView.webContents !== e.sender) continue;
     const ws = activeWs(world);
@@ -1307,7 +1315,7 @@ ipcMain.on('terminum-config', (e) => {
   }
 });
 
-ipcMain.on('terminum-browse', (e, { paneId, pid, url }) => {
+ipcMain.on('ophanim-browse', (e, { paneId, pid, url }) => {
   for (const world of worlds.values()) {
     if (world.termView.webContents !== e.sender) continue;
     const ws = activeWs(world);
@@ -1392,7 +1400,7 @@ app.whenReady().then(() => {
       if (h['sec-ch-ua-full-version-list'] !== undefined) h['sec-ch-ua-full-version-list'] = brandFull;
       callback({ requestHeaders: h });
     });
-  } catch (e) { console.warn('[terminum] sec-ch-ua hook:', e.message); }
+  } catch (e) { console.warn('[ophanim] sec-ch-ua hook:', e.message); }
 
   writeDefaultsFile();
   ensureConfigFile();
@@ -1568,8 +1576,8 @@ app.on('before-quit', (e) => {
     buttons: ['Quit', 'Cancel'],
     defaultId: 1,
     cancelId: 1,
-    title: 'Quit Terminum?',
-    message: 'Quit Terminum?',
+    title: 'Quit Ophanim?',
+    message: 'Quit Ophanim?',
     detail,
   });
   if (choice === 0) {

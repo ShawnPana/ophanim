@@ -68,11 +68,11 @@ function createTermPane(paneId) {
   term.parser.registerOscHandler(1983, (data) => {
     const semi = data.indexOf(';');
     const kind = semi === -1 ? data : data.slice(0, semi);
-    if (kind === 'terminum-config') {
-      ipcRenderer.send('terminum-config');
+    if (kind === 'ophanim-config') {
+      ipcRenderer.send('ophanim-config');
       return true;
     }
-    if (kind !== 'terminum-browse') return false;
+    if (kind !== 'ophanim-browse') return false;
     const rest = data.slice(semi + 1);
     const params = {};
     let urlPart = '';
@@ -88,7 +88,7 @@ function createTermPane(paneId) {
       if (key === 'url') { urlPart = i === -1 ? val : val + ';' + remaining; break; }
       params[key] = val;
     }
-    ipcRenderer.send('terminum-browse', {
+    ipcRenderer.send('ophanim-browse', {
       paneId,
       pid: String(params.pid || ''),
       url: urlPart || 'about:blank',

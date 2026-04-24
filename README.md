@@ -1,4 +1,4 @@
-# terminum
+# ophanim
 
 A terminal that can summon a browser. Tile terminals and web pages in the same
 window; flip a pane to a browser with `browse <url>`, flip it back with
@@ -7,8 +7,8 @@ window; flip a pane to a browser with `browse <url>`, flip it back with
 ## Install
 
 ```bash
-git clone https://github.com/ShawnPana/terminum.git
-cd terminum
+git clone https://github.com/ShawnPana/ophanim.git
+cd ophanim
 npm install
 npm start
 ```
@@ -28,8 +28,8 @@ The browser starts *disengaged* — your keybindings still work. Press
 Press `Alt+Esc` again on a disengaged browser pane to flip it back to a
 terminal.
 
-`config` opens a settings pane (`~/.config/terminum/config.json`).
-`terminum --help` shows the full command list.
+`config` opens a settings pane (`~/.config/ophanim/config.json`).
+`ophanim --help` shows the full command list.
 
 ## Default keybindings
 
@@ -54,7 +54,7 @@ prefer.
 
 ## Config
 
-Two files in `~/.config/terminum/`:
+Two files in `~/.config/ophanim/`:
 
 - `defaults.json` — regenerated on every launch. Read-only reference. Lists
   every key, its default, and an inline schema in `_reference`.
@@ -73,7 +73,7 @@ The `config` command opens a schema-driven UI for the same file.
   terminal layer.
 - Pane focus is tracked in main; keystrokes are intercepted at the
   webContents level via `before-input-event`.
-- `bin/browse`, `bin/config`, `bin/terminum` emit OSC `1983;…` escape
+- `bin/browse`, `bin/config`, `bin/ophanim` emit OSC `1983;…` escape
   sequences that the renderer parses and forwards to main.
 - Shell integration injects `bin/` onto `$PATH` and re-prepends it via
   per-shell wrappers in `shell/{zsh,bash,fish}/` so macOS path_helper

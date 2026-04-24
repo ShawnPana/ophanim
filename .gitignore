@@ -1,3 +1,4 @@
 node_modules
+dist
 shell/zsh/.zcompdump*
 shell/zsh/.zsh_history
