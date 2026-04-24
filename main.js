@@ -288,6 +288,51 @@ function validateConfig(parsed) {
   return errors;
 }
 
+// Mutate the in-memory config globals and push the result to every open
+// world + browser pane. Shared between disk-load (save, hot-reload) and
+// live preview from the config UI. `resize` controls whether open windows
+// snap to windowConfig.width/height — off for preview so typing digits
+// into a number field doesn't shrink the window on every keystroke.
+function applyParsedConfig(parsed, { resize } = { resize: true }) {
+  if (parsed && parsed.keybindings && typeof parsed.keybindings === 'object') {
+    const next = { ...DEFAULT_BINDINGS };
+    for (const [k, v] of Object.entries(parsed.keybindings)) {
+      if (Array.isArray(v)) next[k] = v.filter((x) => typeof x === 'string');
+      else if (typeof v === 'string') next[k] = [v];
+    }
+    bindings = next;
+  } else {
+    bindings = DEFAULT_BINDINGS;
+  }
+
+  termConfig = mergeDeep(DEFAULT_TERMINAL, parsed && parsed.terminal);
+  if (tmuxBackend) tmuxBackend.invalidatePathCache();
+  windowConfig = mergeDeep(DEFAULT_WINDOW, parsed && parsed.window);
+  paneConfig = mergeDeep(DEFAULT_PANES, parsed && parsed.panes);
+  workspaceConfig = mergeDeep(DEFAULT_WORKSPACES, parsed && parsed.workspaces);
+  browserConfig = mergeDeep(DEFAULT_BROWSER, parsed && parsed.browser);
+
+  for (const world of worlds.values()) pushRuntimeConfig(world);
+  for (const world of worlds.values()) {
+    for (const ws of world.workspaces) {
+      for (const pane of ws.panes.values()) {
+        if (pane.kind === 'browser') {
+          updateBrowserBorder(pane);
+          pushBrowserTheme(pane);
+        }
+      }
+    }
+  }
+  if (resize) {
+    const w = Math.max(300, windowConfig.width  || 1000);
+    const h = Math.max(200, windowConfig.height || 650);
+    for (const world of worlds.values()) {
+      if (world.win.isDestroyed()) continue;
+      try { world.win.setSize(w, h); } catch {}
+    }
+  }
+}
+
 function loadConfigFromDisk() {
   let parsed = null;
   try {
@@ -309,51 +354,11 @@ function loadConfigFromDisk() {
     const msg = `config: ${errors.join('; ')}`;
     console.warn('[ophanim]', msg);
     pushConfigError(msg);
-    return; // don't apply a semantically-broken config
+    return;
   }
 
   if (lastConfigError) pushConfigError(null);
-
-  if (parsed && parsed.keybindings && typeof parsed.keybindings === 'object') {
-    const next = { ...DEFAULT_BINDINGS };
-    for (const [k, v] of Object.entries(parsed.keybindings)) {
-      if (Array.isArray(v)) next[k] = v.filter((x) => typeof x === 'string');
-      else if (typeof v === 'string') next[k] = [v];
-    }
-    bindings = next;
-  } else {
-    bindings = DEFAULT_BINDINGS;
-  }
-
-  termConfig = mergeDeep(DEFAULT_TERMINAL, parsed && parsed.terminal);
-  // Let a `terminal.tmuxPath` edit take effect without restart.
-  if (tmuxBackend) tmuxBackend.invalidatePathCache();
-  windowConfig = mergeDeep(DEFAULT_WINDOW, parsed && parsed.window);
-  paneConfig = mergeDeep(DEFAULT_PANES, parsed && parsed.panes);
-  workspaceConfig = mergeDeep(DEFAULT_WORKSPACES, parsed && parsed.workspaces);
-  browserConfig = mergeDeep(DEFAULT_BROWSER, parsed && parsed.browser);
-
-  for (const world of worlds.values()) pushRuntimeConfig(world);
-  // Live-update any open browser panes with the new theme.
-  for (const world of worlds.values()) {
-    for (const ws of world.workspaces) {
-      for (const pane of ws.panes.values()) {
-        if (pane.kind === 'browser') {
-          updateBrowserBorder(pane);
-          pushBrowserTheme(pane);
-        }
-      }
-    }
-  }
-  // Live-resize open windows so window.width / window.height edits are
-  // visible without relaunching. setSize ignores x/y so the window stays
-  // where the user dragged it.
-  const w = Math.max(300, windowConfig.width  || 1000);
-  const h = Math.max(200, windowConfig.height || 650);
-  for (const world of worlds.values()) {
-    if (world.win.isDestroyed()) continue;
-    try { world.win.setSize(w, h); } catch {}
-  }
+  applyParsedConfig(parsed, { resize: true });
 }
 
 function pushBrowserTheme(pane) {
@@ -828,6 +833,11 @@ function destroyPaneResources(world, pane) {
   } else if (pane.kind === 'config') {
     try { world.win.contentView.removeChildView(pane.view); } catch {}
     try { pane.view.webContents.close(); } catch {}
+    // A config pane may have applied unsaved preview state to in-memory
+    // config. Snap back to what's on disk so the preview doesn't outlive
+    // the pane (e.g. closePane, closeWorkspace, or window-close paths
+    // that bypass the config-ui-close IPC).
+    loadConfigFromDisk();
   }
   if (world.rendererReady) {
     world.termView.webContents.send('pane-remove', { paneId: pane.id });
@@ -1963,9 +1973,23 @@ ipcMain.on('config-ui-save', (e, config) => {
   }
 });
 
+// Live preview — apply the form state to in-memory config without
+// touching disk. Save path still writes + loadConfigFromDisk. If the
+// user closes or resets without saving, we re-read the saved config so
+// unsaved previews don't leak past the pane's lifetime.
+ipcMain.on('config-ui-preview', (e, parsed) => {
+  if (!findConfigPaneByWc(e.sender)) return;
+  const errors = validateConfig(parsed);
+  if (errors.length > 0) return; // don't apply a semantically-broken preview
+  applyParsedConfig(parsed, { resize: false });
+});
+
 ipcMain.on('config-ui-close', (e) => {
   const found = findConfigPaneByWc(e.sender);
-  if (found) convertToTerminal(found.world, found.pane.id);
+  if (!found) return;
+  // Revert any unsaved live-preview state by reloading the saved config.
+  loadConfigFromDisk();
+  convertToTerminal(found.world, found.pane.id);
 });
 
 ipcMain.on('config-ui-reset', (e) => {

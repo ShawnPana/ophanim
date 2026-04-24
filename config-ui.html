@@ -29,6 +29,12 @@
     padding: 0; cursor: pointer; border-radius: 3px;
   }
   input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; }
+  button.reset-field {
+    background: transparent; border: 1px solid #333; color: #888;
+    width: 22px; height: 22px; padding: 0; line-height: 1;
+    font-size: 13px; cursor: pointer; border-radius: 3px;
+  }
+  button.reset-field:hover { color: #ddd; border-color: #555; }
   .nested { margin-left: 14px; border-left: 1px solid #222; padding-left: 12px; }
   .footer { padding: 10px 20px;
             background: #151515; border-top: 1px solid #2a2a2a;
@@ -151,8 +157,63 @@ function renderLeaf(path, dv, cv, container) {
     input.dataset.kind = 'string';
   }
   input.dataset.path = attrPath;
+  input._default = dv;
   row.appendChild(input);
+
+  // Per-field reset button, only visible when the input's value differs
+  // from the default. Clicking restores default and fires an input event
+  // so the live-preview pipeline + this button's own visibility update.
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'reset-field';
+  resetBtn.type = 'button';
+  resetBtn.textContent = '↺';
+  resetBtn.title = 'Reset to default';
+  resetBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    writeDefault(input);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  input._resetBtn = resetBtn;
+  row.appendChild(resetBtn);
+  updateResetVisibility(input);
+
   container.appendChild(row);
+}
+
+function expandHex(v) {
+  if (typeof v !== 'string' || v[0] !== '#') return v;
+  if (v.length === 4) return '#' + v.slice(1).split('').map(c => c + c).join('');
+  return v.toLowerCase();
+}
+
+function valuesEqual(kind, a, b) {
+  if (kind === 'color')  return expandHex(a || '').toLowerCase() === expandHex(b || '').toLowerCase();
+  if (kind === 'array')  return JSON.stringify(Array.isArray(a) ? a : []) === JSON.stringify(Array.isArray(b) ? b : []);
+  if (kind === 'bool')   return Boolean(a) === Boolean(b);
+  if (kind === 'number') return Number(a) === Number(b);
+  if (kind === 'nullable-string') return (a || null) === (b || null);
+  return String(a == null ? '' : a) === String(b == null ? '' : b);
+}
+
+function updateResetVisibility(input) {
+  if (!input._resetBtn) return;
+  const cur = readInput(input);
+  const eq = valuesEqual(input.dataset.kind, cur, input._default);
+  input._resetBtn.style.visibility = eq ? 'hidden' : 'visible';
+}
+
+function writeDefault(input) {
+  const dv = input._default;
+  switch (input.dataset.kind) {
+    case 'bool':            input.checked = Boolean(dv); return;
+    case 'number':          input.value = dv == null ? '' : String(dv); return;
+    case 'array':           input.value = (Array.isArray(dv) ? dv : []).join(', '); return;
+    case 'color':           input.value = expandHex(dv || '#000000'); return;
+    case 'nullable-string': input.value = typeof dv === 'string' ? dv : ''; return;
+    case 'string':
+    default:                input.value = dv == null ? '' : String(dv); return;
+  }
 }
 
 function renderFields(pathPrefix, defSection, curSection, container) {
@@ -227,10 +288,32 @@ function collectForm() {
   return out;
 }
 
+// Live preview: every edit pushes the current form state to main which
+// mutates the in-memory config (no disk write). Save commits; Close
+// reverts. Bound once after render so dynamically-inserted inputs all
+// get it via event delegation on #form.
+let previewTimer = null;
+function schedulePreview() {
+  if (previewTimer) return;
+  previewTimer = setTimeout(() => {
+    previewTimer = null;
+    ipcRenderer.send('config-ui-preview', collectForm());
+  }, 30);
+}
+
+function onFormChange(e) {
+  const target = e.target;
+  if (target && target.dataset && target.dataset.path) updateResetVisibility(target);
+  schedulePreview();
+}
+
 ipcRenderer.on('config-ui-init', (_e, data) => {
   defaults = data.defaults || {};
   current = data.current || {};
   renderForm();
+  const form = $('form');
+  form.addEventListener('input', onFormChange);
+  form.addEventListener('change', onFormChange);
 });
 
 $('save').addEventListener('click', () => {
