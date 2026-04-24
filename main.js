@@ -406,23 +406,42 @@ function findPaneGlobal(paneId) {
   return null;
 }
 
-function ptyEnv() {
+// Shell integration — inject bin/ into the spawned shell's PATH, then
+// re-source it through a wrapper so macOS path_helper doesn't clobber it
+// on login shells. Pattern matches VS Code / Ghostty / WezTerm / kitty:
+// per-shell wrapper file, user's real rc is sourced first, env vars
+// point the shell at our wrapper. Shells we don't recognize still get
+// the PATH prepend — just no reinstatement if something later wipes it.
+function shellIntegration(shellPath) {
+  const base = path.basename(shellPath || '').toLowerCase();
+  const BASH_RC  = path.join(APP_DIR, 'shell', 'bash', 'rc');
+  const FISH_RC  = path.join(APP_DIR, 'shell', 'fish', 'init.fish');
+  const ZSH_DIR  = path.join(APP_DIR, 'shell', 'zsh');
+  if (base === 'zsh')  return { args: [],                                            env: { ZDOTDIR: ZSH_DIR } };
+  if (base === 'bash') return { args: ['--rcfile', BASH_RC],                         env: { BASH_ENV: BASH_RC } };
+  if (base === 'fish') return { args: ['--init-command', `source '${FISH_RC}'`],     env: {} };
+  return { args: [], env: {} };
+}
+
+function ptyEnv(shellSpecific = {}) {
   return {
     ...process.env,
     TERM: 'xterm-256color',
     PATH: `${BIN_DIR}:${process.env.PATH || ''}`,
     TERMINUM_BIN: BIN_DIR,
-    ZDOTDIR: path.join(APP_DIR, 'shell', 'zsh'),
+    TERMINUM_SHELL_INTEGRATION: '1',
+    ...shellSpecific,
   };
 }
 
 function spawnPty(world, paneId, cols = 100, rows = 30) {
   const shell = termConfig.shell || process.env.SHELL || '/bin/zsh';
-  const p = pty.spawn(shell, [], {
+  const integ = shellIntegration(shell);
+  const p = pty.spawn(shell, integ.args, {
     name: 'xterm-256color',
     cols, rows,
     cwd: os.homedir(),
-    env: ptyEnv(),
+    env: ptyEnv(integ.env),
   });
   p.onData((data) => {
     if (!world.win.isDestroyed() && !world.termView.webContents.isDestroyed()) {
