@@ -172,6 +172,86 @@
   });
   urlInput.addEventListener('input', updateSuggestions);
 
+  // Port of Chromium's OmniboxView::SanitizeTextForPaste from
+  // components/omnibox/browser/omnibox_view.cc. Asymmetric LF rule:
+  // walk alternating non-ws/ws runs; drop leading + trailing whitespace;
+  // copy non-CR/LF whitespace runs verbatim (preserves intentional spaces
+  // in queries like "best electron tutorial"); replace CR/LF-containing
+  // runs with a single \n placeholder; after the walk, if any non-LF
+  // whitespace was seen elsewhere, convert placeholders to spaces,
+  // otherwise delete them entirely. The "delete" branch fixes URLs that
+  // were wrapped across lines in chat/email — "foo\nbar" reconstructs as
+  // "foobar". Final `javascript:` schema strip guards paste-and-go.
+  function sanitizeTextForPaste(text) {
+    if (!text) return '';
+    const isWs = (c) => /\s/.test(c);
+    const isWsNoCrLf = (c) => /[^\S\r\n]/.test(c);
+    const findFirstNotOf = (s, pred, from) => {
+      for (let i = from; i < s.length; i++) if (!pred(s[i])) return i;
+      return -1;
+    };
+    const findFirstOf = (s, pred, from) => {
+      for (let i = from; i < s.length; i++) if (pred(s[i])) return i;
+      return -1;
+    };
+
+    let end = findFirstNotOf(text, isWs, 0);
+    if (end === -1) return ' '; // all-whitespace → single space
+
+    let output = '';
+    let outputNeedsLfConversion = false;
+    let seenNonLfWhitespace = false;
+    while (true) {
+      const begin = end;
+      end = findFirstOf(text, isWs, begin + 1);
+      output += end === -1 ? text.slice(begin) : text.slice(begin, end);
+      if (end !== -1) {
+        const wsBegin = end;
+        end = findFirstNotOf(text, isWsNoCrLf, wsBegin);
+        if (end !== -1 && text[end] !== '\n' && text[end] !== '\r') {
+          seenNonLfWhitespace = true;
+          output += text.slice(wsBegin, end);
+          continue;
+        }
+      }
+      if (end !== -1) end = findFirstNotOf(text, isWs, end + 1);
+      if (end === -1) break; // trailing whitespace dropped
+      outputNeedsLfConversion = true;
+      output += '\n';
+    }
+
+    if (outputNeedsLfConversion) {
+      output = output.replace(/\n/g, seenNonLfWhitespace ? ' ' : '');
+    }
+
+    const JS_PREFIX = 'javascript:';
+    let i = 0;
+    let foundJs = false;
+    while (i < output.length) {
+      const c = output.charCodeAt(i);
+      if (isWs(output[i]) || c < 0x20) { i++; continue; }
+      if (output.substr(i, JS_PREFIX.length).toLowerCase() !== JS_PREFIX) break;
+      foundJs = true;
+      i += JS_PREFIX.length;
+    }
+    return foundJs ? output.slice(i) : output;
+  }
+
+  urlInput.addEventListener('paste', (e) => {
+    const text = e.clipboardData && e.clipboardData.getData('text/plain');
+    if (!text) return;
+    const cleaned = sanitizeTextForPaste(text);
+    if (cleaned === text) return; // no transformation needed
+    e.preventDefault();
+    const start = urlInput.selectionStart || 0;
+    const end = urlInput.selectionEnd || 0;
+    const v = urlInput.value;
+    urlInput.value = v.slice(0, start) + cleaned + v.slice(end);
+    const pos = start + cleaned.length;
+    urlInput.setSelectionRange(pos, pos);
+    urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
   urlInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
